@@ -43,6 +43,8 @@ ABSL_FLAG(std::string, input_video_path, "",
 ABSL_FLAG(std::string, output_video_path, "",
           "Full path of where to save result (.mp4 only). "
           "If not provided, show result in a window.");
+ABSL_FLAG(int, output_rtp_port, 10018,
+          "output rtp port");
 
 absl::Status RunMPPGraph() {
   std::string calculator_graph_config_contents;
@@ -65,26 +67,37 @@ absl::Status RunMPPGraph() {
   mediapipe::GlCalculatorHelper gpu_helper;
   gpu_helper.InitializeForTest(graph.GetGpuResources().get());
 
+  const int port = absl::GetFlag(FLAGS_output_rtp_port);
+
   LOG(INFO) << "Initialize the camera or load the video.";
   cv::VideoCapture capture;
   const bool load_video = !absl::GetFlag(FLAGS_input_video_path).empty();
   if (load_video) {
     capture.open(absl::GetFlag(FLAGS_input_video_path));
   } else {
-    capture.open(0);
+
+    cv::String pipe_in = cv::format(
+        " udpsrc port=%d  do-timestamp=true caps = "
+        "\"application/x-rtp,media=(string)video,clock-rate=(int)90000, "
+        "encoding-name=(string)H264, payload=(int)96\" ! rtph264depay ! "
+        "avdec_h264 ! videoconvert !  appsink sync=0",
+        port);
+    capture.open(pipe_in, cv::CAP_GSTREAMER);
+    // capture.open(0);
   }
   RET_CHECK(capture.isOpened());
+  int frame_rate = capture.get(cv::CAP_PROP_FPS);
 
   cv::VideoWriter writer;
   const bool save_video = !absl::GetFlag(FLAGS_output_video_path).empty();
-  if (!save_video) {
-    cv::namedWindow(kWindowName, /*flags=WINDOW_AUTOSIZE*/ 1);
-#if (CV_MAJOR_VERSION >= 3) && (CV_MINOR_VERSION >= 2)
-    capture.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-    capture.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-    capture.set(cv::CAP_PROP_FPS, 30);
-#endif
-  }
+  //   if (!save_video) {
+  //     cv::namedWindow(kWindowName, /*flags=WINDOW_AUTOSIZE*/ 1);
+  // #if (CV_MAJOR_VERSION >= 3) && (CV_MINOR_VERSION >= 2)
+  //     capture.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+  //     capture.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+  //     capture.set(cv::CAP_PROP_FPS, 30);
+  // #endif
+  //   }
 
   LOG(INFO) << "Start running the calculator graph.";
   ASSIGN_OR_RETURN(mediapipe::OutputStreamPoller poller,
@@ -115,6 +128,7 @@ absl::Status RunMPPGraph() {
     auto input_frame = absl::make_unique<mediapipe::ImageFrame>(
         mediapipe::ImageFormat::SRGBA, camera_frame.cols, camera_frame.rows,
         mediapipe::ImageFrame::kGlDefaultAlignmentBoundary);
+
     cv::Mat input_frame_mat = mediapipe::formats::MatView(input_frame.get());
     camera_frame.copyTo(input_frame_mat);
 
@@ -138,13 +152,14 @@ absl::Status RunMPPGraph() {
 
     // Get the graph result packet, or stop if that fails.
     mediapipe::Packet packet;
-    if (!poller.Next(&packet)) break;
+    if (!poller.Next(&packet))
+      break;
     std::unique_ptr<mediapipe::ImageFrame> output_frame;
 
     // Convert GpuBuffer to ImageFrame.
     MP_RETURN_IF_ERROR(gpu_helper.RunInGlContext(
         [&packet, &output_frame, &gpu_helper]() -> absl::Status {
-          auto& gpu_frame = packet.Get<mediapipe::GpuBuffer>();
+          auto &gpu_frame = packet.Get<mediapipe::GpuBuffer>();
           auto texture = gpu_helper.CreateSourceTexture(gpu_frame);
           output_frame = absl::make_unique<mediapipe::ImageFrame>(
               mediapipe::ImageFormatForGpuBufferFormat(gpu_frame.format()),
@@ -170,26 +185,36 @@ absl::Status RunMPPGraph() {
       if (!writer.isOpened()) {
         LOG(INFO) << "Prepare video writer.";
         writer.open(absl::GetFlag(FLAGS_output_video_path),
-                    mediapipe::fourcc('a', 'v', 'c', '1'),  // .mp4
+                    mediapipe::fourcc('a', 'v', 'c', '1'), // .mp4
                     capture.get(cv::CAP_PROP_FPS), output_frame_mat.size());
         RET_CHECK(writer.isOpened());
       }
-      writer.write(output_frame_mat);
     } else {
-      cv::imshow(kWindowName, output_frame_mat);
-      // Press any key to exit.
-      const int pressed_key = cv::waitKey(5);
-      if (pressed_key >= 0 && pressed_key != 255) grab_frames = false;
+      if (!writer.isOpened()) {
+        LOG(INFO) << "Prepare stream writer to port: " << port
+                  << "frame rate: " << frame_rate;
+        cv::String pipe_out = cv::format(
+            " appsrc "
+            "caps=video/x-raw,format=BGR,width=1280,height=720,framerate=30/1 "
+            "! videoconvert ! video/x-raw,format=I420 ! nvvideoconvert ! "
+            "video/x-raw(memory:NVMM) ! nvv4l2h264enc  ! rtph264pay ! udpsink  "
+            "host=10.8.10.110  port=%d sync=0",
+            port);
+        writer.open(pipe_out, cv::CAP_GSTREAMER, 0, frame_rate,
+                    cv::Size(1280, 720), true);
+      }
     }
+    writer.write(output_frame_mat);
   }
 
   LOG(INFO) << "Shutting down.";
-  if (writer.isOpened()) writer.release();
+  if (writer.isOpened())
+    writer.release();
   MP_RETURN_IF_ERROR(graph.CloseInputStream(kInputStream));
   return graph.WaitUntilDone();
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   google::InitGoogleLogging(argv[0]);
   absl::ParseCommandLine(argc, argv);
   absl::Status run_status = RunMPPGraph();
