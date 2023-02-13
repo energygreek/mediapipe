@@ -231,6 +231,15 @@ cc_library(
 )
 
 cc_library(
+    name = "gstreamer_core",
+    hdrs = ["gstreamer_inc.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party:libgstreamer",
+    ],
+)
+
+cc_library(
     name = "opencv_imgproc",
     hdrs = ["opencv_imgproc_inc.h"],
     deps = [
@@ -292,6 +301,17 @@ cc_library(
         ":opencv_core",
         "//mediapipe/framework:port",
         "//third_party:opencv",
+    ],
+)
+
+
+cc_library(
+    name = "gstreamer",
+    hdrs = ["gstreamer_inc.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":gstreamer_core",
+        "//third_party:libgstreamer",
     ],
 )
 

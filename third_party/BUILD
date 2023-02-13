@@ -217,6 +217,22 @@ cc_library(
     }),
 )
 
+cc_library(
+    name = "libgstreamer",
+    visibility = ["//visibility:public"],
+    deps = select({
+        "//mediapipe:android_x86": [],
+        "//mediapipe:android_x86_64": [],
+        "//mediapipe:android_armeabi": [],
+        "//mediapipe:android_arm": [],
+        "//mediapipe:android_arm64": [],
+        "//mediapipe:ios": [],
+        "//conditions:default": [
+            "@linux_gstreamer//:libgstreamer",
+        ],
+    }),
+)
+
 android_library(
     name = "androidx_annotation",
     exports = [

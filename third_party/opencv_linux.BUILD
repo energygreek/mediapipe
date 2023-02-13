@@ -28,7 +28,6 @@ cc_library(
         "include/opencv4/",
     ],
     linkopts = [
-        "-L/home/husongtao/miniconda3/envs/py38/lib",
         "-l:libopencv_core.so",
         "-l:libopencv_calib3d.so",
         "-l:libopencv_features2d.so",
