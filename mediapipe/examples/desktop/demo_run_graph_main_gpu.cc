@@ -152,6 +152,7 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
   gchar *filename = NULL;
   ProgramData *data = NULL;
   gchar *string = NULL;
+  gchar *string_av = NULL;
   GstBus *bus = NULL;
   GstElement *testsink = NULL;
   GstElement *testsource = NULL;
@@ -168,10 +169,21 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
       "video/x-raw,format=RGBA ! videoconvert ! video/x-raw, format=RGBA ! appsink "
       "caps=\"video/x-raw,format=RGBA,width=1280,height=720,framerate=10/1\" "
       "name=testsink sync=false");
+  
+  string_av = g_strdup_printf(
+    "udpsrc port=10020 ! "
+    "application/"
+    "x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
+    "H264,payload=(int)96 ! "
+    "rtph264depay ! queue ! h264parse ! avdec_h264 ! "
+    " videoconvert ! appsink "
+    "caps=\"video/x-raw,format=RGBA,width=1280,height=720,framerate=10/1\" "
+    "name=testsink sync=false");
   g_free(filename);
   g_print("%s\n", string);
-  data->src_pipeline = gst_parse_launch(string, NULL);
+  data->src_pipeline = gst_parse_launch(string_av, NULL);
   g_free(string);
+  g_free(string_av);
 
   if (data->src_pipeline == NULL) {
     g_print("Bad source\n");
@@ -198,9 +210,16 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
           "video/x-raw,format=RGBA,width=1280,height=720,framerate=10/1 ! "
           "videoconvert ! video/x-raw,format=I420 ! nvvideoconvert ! "
           "video/x-raw(memory:NVMM) ! nvv4l2h264enc  ! rtph264pay ! udpsink  "
-          "host=10.8.10.102  port=10022 sync=0");
-  data->sink_pipeline = gst_parse_launch(string, NULL);
+          "host=10.8.10.103  port=10022 sync=0");
+  
+  string_av = g_strdup_printf(
+        " appsrc name=testsource ! "
+        "video/x-raw,format=RGBA,width=1280,height=720,framerate=10/1 ! "
+        "videoconvert ! x264enc ! rtph264pay ! udpsink  "
+        "host=10.8.10.103  port=10022 sync=0");
+  data->sink_pipeline = gst_parse_launch(string_av, NULL);
   g_free(string);
+  g_free(string_av);
 
   if (data->sink_pipeline == NULL) {
     g_print("Bad sink\n");
@@ -243,7 +262,7 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
         mediapipe::ImageFrame::kDefaultAlignmentBoundary);
 
     // Send image packet into the graph.
-    size_t frame_timestamp_us = GST_BUFFER_PTS(buffer);
+    static size_t frame_timestamp_us = GST_BUFFER_PTS(buffer);
     gst_sample_unref(sample);
 
     absl::Status status =
@@ -264,6 +283,8 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
     if (!status.ok()) {
       LOG(ERROR) << "AddPacketToInputStream";
     }
+
+    frame_timestamp_us += 100;
 
     // Get the graph result packet, or stop if that fails.
     mediapipe::Packet packet;
