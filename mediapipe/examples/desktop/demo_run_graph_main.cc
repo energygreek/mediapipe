@@ -154,15 +154,24 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
   gst_init(&argc, &argv);
   data = g_new0(ProgramData, 1);
 
+  // string = g_strdup_printf(
+  //     "udpsrc port=10020 ! "
+  //     "application/"
+  //     "x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
+  //     "H264,payload=(int)96 ! "
+  //     "rtph264depay ! avdec_h264 ! videoconvert ! "
+  //     "appsink "
+  //     "caps=\"video/x-raw,format=RGBA,width=1280,height=720,framerate=10/1\" "
+  //     "name=testsink sync=false");
   string = g_strdup_printf(
-      "udpsrc port=10020 ! "
-      "application/"
-      "x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
-      "H264,payload=(int)96 ! "
-      "rtph264depay ! avdec_h264 ! videoconvert ! "
-      "appsink "
-      "caps=\"video/x-raw,format=RGB,width=1280,height=720,framerate=10/1\" "
-      "name=testsink sync=false");
+  "udpsrc port=10020 ! "
+  "application/"
+  "x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
+  "H264,payload=(int)96 ! "
+  "rtph264depay ! queue ! h264parse ! avdec_h264 ! "
+  " videoconvert ! appsink "
+  "caps=\"video/x-raw,format=RGB,width=1280,height=720,framerate=10/1\" "
+  "name=testsink sync=false");
   g_free(filename);
   g_print("%s\n", string);
   data->src_pipeline = gst_parse_launch(string, NULL);
@@ -189,9 +198,11 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
    * behaviour on the src which means that we will push the entire file into
    * memory. */
   string = g_strdup_printf(
-      "appsrc name=testsource ! "
-      "video/x-raw,format=RGB,width=1280,height=720,framerate=10/1  ! "
-      "videoconvert ! fpsdisplaysink");
+      " appsrc name=testsource ! "
+      "video/x-raw,format=RGB,width=1280,height=720,framerate=10/1 ! "
+      "videoconvert ! x264enc ! rtph264pay ! udpsink  "
+      "host=10.8.10.103  port=10022 sync=0");
+
   data->sink_pipeline = gst_parse_launch(string, NULL);
   g_free(string);
 
@@ -236,7 +247,7 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
         mediapipe::ImageFrame::kDefaultAlignmentBoundary);
 
     // Send image packet into the graph.
-    size_t frame_timestamp_us = GST_BUFFER_PTS(buffer);
+    static size_t frame_timestamp_us = GST_BUFFER_PTS(buffer);
     gst_sample_unref(sample);
     absl::Status status = graph.AddPacketToInputStream(
         kInputStream, mediapipe::Adopt(input_frame.release())
@@ -244,6 +255,8 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
     if(!status.ok()){
       LOG(ERROR) << "AddPacketToInputStream";
     }
+
+    frame_timestamp_us += 100;
     // Get the graph result packet, or stop if that fails.
     mediapipe::Packet packet;
     if (!poller.Next(&packet)) {
@@ -267,6 +280,7 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
     /* Push the buffer into the appsrc */
     g_signal_emit_by_name(testsource, "push-buffer", buffer, &ret);
     /* Free the buffer now that we are done with it */
+    gst_buffer_unref(buffer);
 
     if (ret != GST_FLOW_OK) {
       /* We got some error, stop sending data */

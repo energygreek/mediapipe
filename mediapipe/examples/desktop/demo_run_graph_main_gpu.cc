@@ -33,7 +33,7 @@
 #include "mediapipe/gpu/gpu_shared_data_internal.h"
 
 constexpr char kInputStream[] = "input_video";
-constexpr char kOutputStream[] = "output_video";
+constexpr char kOutputStream[] = "output_image";
 constexpr char kWindowName[] = "MediaPipe";
 
 ABSL_FLAG(std::string, calculator_graph_config_file, "",
@@ -147,8 +147,7 @@ static void print_pad_capabilities(GstElement *element, gchar *pad_name) {
 }
 
 int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
-                   mediapipe::OutputStreamPoller &poller,
-                   mediapipe::GlCalculatorHelper &gpu_helper) {
+                   mediapipe::OutputStreamPoller &poller) {
   gchar *filename = NULL;
   ProgramData *data = NULL;
   gchar *string = NULL;
@@ -265,22 +264,10 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
     static size_t frame_timestamp_us = GST_BUFFER_PTS(buffer);
     gst_sample_unref(sample);
 
-    absl::Status status =
-        gpu_helper.RunInGlContext([&input_frame, &frame_timestamp_us, &graph,
-                                   &gpu_helper]() -> absl::Status {
-          // Convert ImageFrame to GpuBuffer.
-          auto texture = gpu_helper.CreateSourceTexture(*input_frame.get());
-          auto gpu_frame = texture.GetFrame<mediapipe::GpuBuffer>();
-          glFlush();
-          texture.Release();
-          // Send GPU image packet into the graph.
-          MP_RETURN_IF_ERROR(graph.AddPacketToInputStream(
-              kInputStream, mediapipe::Adopt(gpu_frame.release())
-                                .At(mediapipe::Timestamp(frame_timestamp_us))));
-          return absl::OkStatus();
-        });
-
-    if (!status.ok()) {
+    absl::Status status = graph.AddPacketToInputStream(
+        kInputStream, mediapipe::Adopt(input_frame.release())
+                          .At(mediapipe::Timestamp(frame_timestamp_us)));
+    if(!status.ok()){
       LOG(ERROR) << "AddPacketToInputStream";
     }
 
@@ -291,29 +278,7 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
     if (!poller.Next(&packet)) {
       return -1;
     }
-    std::unique_ptr<mediapipe::ImageFrame> output_frame;
-
-    // Convert GpuBuffer to ImageFrame.
-    status = gpu_helper.RunInGlContext(
-        [&packet, &output_frame, &gpu_helper]() -> absl::Status {
-          auto &gpu_frame = packet.Get<mediapipe::GpuBuffer>();
-          auto texture = gpu_helper.CreateSourceTexture(gpu_frame);
-          output_frame = absl::make_unique<mediapipe::ImageFrame>(
-              mediapipe::ImageFormatForGpuBufferFormat(gpu_frame.format()),
-              gpu_frame.width(), gpu_frame.height(),
-              mediapipe::ImageFrame::kGlDefaultAlignmentBoundary);
-          gpu_helper.BindFramebuffer(texture);
-          const auto info = mediapipe::GlTextureInfoForGpuBufferFormat(
-              gpu_frame.format(), 0, gpu_helper.GetGlVersion());
-          glReadPixels(0, 0, texture.width(), texture.height(), info.gl_format,
-                       info.gl_type, output_frame->MutablePixelData());
-          glFlush();
-          texture.Release();
-          return absl::OkStatus();
-        });
-    if (!status.ok()) {
-      LOG(ERROR) << "GlTextureInfoForGpuBufferFormat";
-    }
+    auto &output_frame = packet.Get<mediapipe::ImageFrame>();
 
     GstMemory *memory;
     GstMapInfo new_info;
@@ -326,7 +291,7 @@ int gstreamer_main(int argc, char *argv[], mediapipe::CalculatorGraph &graph,
 
     gst_buffer_map(new_buffer, &new_info, GST_MAP_WRITE);
     // Copy image
-    memmove(new_info.data, output_frame->PixelData(), output_frame->PixelDataSize());
+    memmove(new_info.data, output_frame.PixelData(), output_frame.PixelDataSize());
     gst_buffer_unmap(new_buffer, &new_info);
 
     GstFlowReturn ret;
@@ -388,9 +353,6 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  mediapipe::GlCalculatorHelper gpu_helper;
-  gpu_helper.InitializeForTest(graph.GetGpuResources().get());
-
   mediapipe::StatusOrPoller status_or_poller =
       graph.AddOutputStreamPoller(kOutputStream);
   if (!status_or_poller.ok()) {
@@ -406,7 +368,7 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  int ret = gstreamer_main(argc, argv, graph, poller, gpu_helper);
+  int ret = gstreamer_main(argc, argv, graph, poller);
   LOG(INFO) << "Shutting down with gst main ret: " << ret;
   graph.CloseInputStream(kInputStream);
   run_status = graph.WaitUntilDone();

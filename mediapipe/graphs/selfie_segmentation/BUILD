@@ -27,6 +27,8 @@ cc_library(
         "//mediapipe/calculators/core:flow_limiter_calculator",
         "//mediapipe/calculators/image:recolor_calculator",
         "//mediapipe/modules/selfie_segmentation:selfie_segmentation_gpu",
+        "//mediapipe/gpu:image_frame_to_gpu_buffer_calculator",
+        "//mediapipe/gpu:gpu_buffer_to_image_frame_calculator",
     ],
 )
 

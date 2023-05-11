@@ -4,7 +4,14 @@
 input_stream: "input_video"
 
 # Output image with rendered results. (GpuBuffer)
-output_stream: "output_video"
+output_stream: "output_image"
+
+# convert memory Image to gpu image
+node: {
+  calculator: "ImageFrameToGpuBufferCalculator"
+  input_stream: "input_video"
+  output_stream: "image_gpu"
+}
 
 # Throttles the images flowing downstream for flow control. It passes through
 # the very first incoming image unaltered, and waits for downstream nodes
@@ -16,21 +23,22 @@ output_stream: "output_video"
 # real-time mobile applications. It also eliminates unnecessarily computation,
 # e.g., the output produced by a node may get dropped downstream if the
 # subsequent nodes are still busy processing previous inputs.
-node {
-  calculator: "FlowLimiterCalculator"
-  input_stream: "input_video"
-  input_stream: "FINISHED:output_video"
-  input_stream_info: {
-    tag_index: "FINISHED"
-    back_edge: true
-  }
-  output_stream: "throttled_input_video"
-}
+
+# node {
+#   calculator: "FlowLimiterCalculator"
+#   input_stream: "input_video"
+#   input_stream: "FINISHED:output_video"
+#   input_stream_info: {
+#     tag_index: "FINISHED"
+#     back_edge: true
+#   }
+#   output_stream: "throttled_input_video"
+# }
 
 # Subgraph that performs selfie segmentation.
 node {
   calculator: "SelfieSegmentationGpu"
-  input_stream: "IMAGE:throttled_input_video"
+  input_stream: "IMAGE:image_gpu"
   output_stream: "SEGMENTATION_MASK:segmentation_mask"
 }
 
@@ -38,7 +46,7 @@ node {
 # Colors the selfie segmentation with the color specified in the option.
 node {
   calculator: "RecolorCalculator"
-  input_stream: "IMAGE_GPU:throttled_input_video"
+  input_stream: "IMAGE_GPU:image_gpu"
   input_stream: "MASK_GPU:segmentation_mask"
   output_stream: "IMAGE_GPU:output_video"
   node_options: {
@@ -49,4 +57,11 @@ node {
       adjust_with_luminance: false
     }
   }
+}
+
+# convert gpubuffer to memory
+node {
+  calculator: "GpuBufferToImageFrameCalculator"
+  input_stream: "output_video"
+  output_stream: "output_image"
 }
